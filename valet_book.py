@@ -28,7 +28,9 @@ def load_env(path="local.env"):
         if not line or line.startswith("#") or "=" not in line:
             continue
         k, v = line.split("=", 1)
-        os.environ[k.strip()] = v.strip().strip('"').strip("'")
+        k = k.strip()
+        if not os.environ.get(k):          # GitHub Variables 등으로 이미 지정된 값이 있으면 그걸 우선
+            os.environ[k] = v.strip().strip('"').strip("'")
 
 
 load_env()
@@ -43,6 +45,7 @@ NTFY_TOPIC = G("NTFY_TOPIC", "")
 HEADLESS = IN_CI or G("HEADLESS", "false").lower() == "true"
 LOOP = G("LOOP", "false" if IN_CI else "true").lower() == "true"
 INTERVAL = int(G("INTERVAL", "60"))
+MAX_MINUTES = int(G("MAX_MINUTES", "0"))   # 0이면 제한 없음. GitHub에서는 한 번 실행에 이 시간만큼 반복
 
 
 def scrub(text):
@@ -219,6 +222,7 @@ def main():
                         "(KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"))
         page = context.new_page()
         n = 0
+        t0 = time.time()
         while True:
             n += 1
             try:
@@ -252,8 +256,12 @@ def main():
                 break
             if not LOOP:
                 break
+            if MAX_MINUTES and time.time() - t0 + INTERVAL > MAX_MINUTES * 60:
+                log(f"{MAX_MINUTES}분 경과: 이번 실행 종료 (다음 실행이 이어서 확인)")
+                break
             time.sleep(INTERVAL + random.uniform(0, 10))
         browser.close()
 
 
 main()
+
