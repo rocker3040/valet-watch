@@ -1,0 +1,38 @@
+name: valet-check
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # 5분마다
+  workflow_dispatch:         # 수동 실행 버튼
+
+permissions:
+  contents: read
+  actions: write             # 예약 성공 후 스스로 멈추기 위해 필요
+
+concurrency:
+  group: valet
+  cancel-in-progress: false  # 동시에 두 번 돌아 중복 예약되는 것 방지
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install playwright
+      - run: playwright install --with-deps chromium
+      - name: 설정 파일 만들기
+        env:
+          CONFIG: ${{ secrets.CONFIG }}
+        run: printf '%s' "$CONFIG" > local.env
+      - name: 확인/예약 실행
+        id: run
+        run: python valet_book.py
+      - name: 예약 성공 시 자동 실행 멈추기
+        if: steps.run.outputs.booked == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow disable valet.yml --repo ${{ github.repository }}
