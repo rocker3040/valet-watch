@@ -1,0 +1,58 @@
+name: valet-check-2
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"  # 30분마다 새로 시작 (한 번 실행하면 50분간 1분 간격으로 반복)
+  workflow_dispatch:         # 수동 실행 버튼
+
+permissions:
+  contents: read
+  actions: write             # 예약 성공 후 스스로 멈추기 위해 필요
+
+concurrency:
+  group: valet2
+  cancel-in-progress: false  # 동시에 두 번 돌아 중복 예약되는 것 방지
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04   # 2026-10-19부터 latest가 바뀌므로 버전 고정
+    timeout-minutes: 60
+    steps:
+      - name: 이 자동 실행이 켜져 있는지 확인 (이미 예약돼 꺼졌다면 건너뜀)
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          state=$(gh api repos/${{ github.repository }}/actions/workflows/valet2.yml --jq .state)
+          echo "state=$state" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.state == 'active'
+      - uses: actions/setup-python@v5
+        if: steps.gate.outputs.state == 'active'
+        with:
+          python-version: "3.12"
+      - run: pip install playwright
+        if: steps.gate.outputs.state == 'active'
+      - run: playwright install --with-deps chromium
+        if: steps.gate.outputs.state == 'active'
+      - name: 설정 파일 만들기
+        if: steps.gate.outputs.state == 'active'
+        env:
+          CONFIG: ${{ secrets.CONFIG2 }}
+        run: printf '%s' "$CONFIG" > local.env
+      - name: 확인/예약 실행
+        id: run
+        if: steps.gate.outputs.state == 'active'
+        env:
+          DEPART_DATE: ${{ vars.DEPART_DATE_2 }}
+          RETURN_DATE: ${{ vars.RETURN_DATE_2 }}
+          LOOP: "true"
+          MAX_MINUTES: "50"
+          INTERVAL: "30"
+          AUTO_SUBMIT: ${{ vars.AUTO_SUBMIT_2 }}
+        run: python valet_book.py
+      - name: 예약 성공 시 자동 실행 멈추기
+        if: steps.run.outputs.booked == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow disable valet2.yml --repo ${{ github.repository }}
