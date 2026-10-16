@@ -57,6 +57,13 @@ def scrub(text):
     return text
 
 
+def scrub_text(text):
+    for secret in (NAME, PHONE, CAR, NTFY_TOPIC):
+        if secret:
+            text = text.replace(secret, "***")
+    return text
+
+
 def log(msg):
     print(f"[{datetime.datetime.now(KST):%H:%M:%S}] {msg}", flush=True)
 
@@ -174,7 +181,22 @@ def submit(page):
     global SUBMIT_CLICKED
     page.get_by_role("button", name="등록하기").click()
     SUBMIT_CLICKED = True
-    page.get_by_role("button", name="확인").click(timeout=10000)
+    try:
+        page.get_by_role("button", name="확인").click(timeout=10000)
+    except Exception:
+        # 확인 버튼이 없을 때: 화면에 어떤 안내가 떠 있는지 로그로 남김 (개인정보는 가림)
+        texts = []
+        try:
+            els = page.locator(".el-message-box, .el-message, .el-dialog, [role=dialog], [role=alert]")
+            for i in range(min(els.count(), 5)):
+                if els.nth(i).is_visible():
+                    texts.append(els.nth(i).inner_text()[:200].replace("\n", " / "))
+        except Exception:
+            pass
+        shown = scrub_text(" | ".join(texts)) if texts else "(보이는 안내 없음)"
+        log(f"등록하기 후 화면 안내: {shown}")
+        log(f"현재 주소: {page.url.split('?')[0]}")
+        raise
     page.wait_for_timeout(3000)
 
 
@@ -264,4 +286,5 @@ def main():
 
 
 main()
+
 
