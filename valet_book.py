@@ -122,11 +122,18 @@ def pick_date(page, idx, date_str):
 
 
 def closed_toast(page):
-    """'예약이 불가합니다' 안내가 뜨면 True (최대 3초 대기)"""
-    page.wait_for_timeout(1000)
+    """'예약이 불가합니다' 안내가 뜨면 True (해외 서버는 응답이 느려서 넉넉히 기다림)"""
+    page.wait_for_timeout(2000)
     try:
-        page.get_by_text("예약이 불가").first.wait_for(state="visible", timeout=3000)
+        page.get_by_text("예약이 불가").first.wait_for(state="visible", timeout=6000)
         return True
+    except Exception:
+        return False
+
+
+def toast_visible_now(page):
+    try:
+        return page.get_by_text("예약이 불가").first.is_visible()
     except Exception:
         return False
 
@@ -177,27 +184,47 @@ def fill_form(page):
 SUBMIT_CLICKED = False   # '등록하기'를 누른 뒤에는 오류가 나도 재시도하지 않음 (중복 예약 방지)
 
 
+MSG_SELECTOR = ".el-message, .el-message-box, .el-notification, .el-dialog, [role=dialog], [role=alert]"
+
+
+def visible_msgs(page):
+    out = []
+    try:
+        els = page.locator(MSG_SELECTOR)
+        for i in range(min(els.count(), 5)):
+            if els.nth(i).is_visible():
+                out.append(els.nth(i).inner_text()[:200].replace("\n", " / "))
+    except Exception:
+        pass
+    return out
+
+
 def submit(page):
+    """반환: 'booked'(접수됨) / 'rejected'(사이트가 거절, 재시도 가능)"""
     global SUBMIT_CLICKED
     page.get_by_role("button", name="등록하기").click()
     SUBMIT_CLICKED = True
+    # 금방 사라지는 안내(토스트)를 놓치지 않도록 클릭 직후 약 2초간 계속 읽음
+    seen = []
+    for _ in range(8):
+        page.wait_for_timeout(250)
+        for t in visible_msgs(page):
+            if t not in seen:
+                seen.append(t)
+        if page.get_by_role("button", name="확인").count():
+            break
+    shown = scrub_text(" | ".join(seen)) if seen else "(보이는 안내 없음)"
+    log(f"등록하기 직후 안내: {shown}")
+    if any(w in shown for w in ("불가", "초과", "마감", "실패", "이미")):
+        SUBMIT_CLICKED = False      # 거절됐으므로 다시 시도해도 중복 예약이 아님
+        return "rejected"
     try:
         page.get_by_role("button", name="확인").click(timeout=10000)
     except Exception:
-        # 확인 버튼이 없을 때: 화면에 어떤 안내가 떠 있는지 로그로 남김 (개인정보는 가림)
-        texts = []
-        try:
-            els = page.locator(".el-message-box, .el-message, .el-dialog, [role=dialog], [role=alert]")
-            for i in range(min(els.count(), 5)):
-                if els.nth(i).is_visible():
-                    texts.append(els.nth(i).inner_text()[:200].replace("\n", " / "))
-        except Exception:
-            pass
-        shown = scrub_text(" | ".join(texts)) if texts else "(보이는 안내 없음)"
-        log(f"등록하기 후 화면 안내: {shown}")
-        log(f"현재 주소: {page.url.split('?')[0]}")
+        log(f"확인 버튼 없음. 현재 주소: {page.url.split('?')[0]}")
         raise
     page.wait_for_timeout(3000)
+    return "booked"
 
 
 # ---------- 1회 시도 ----------
@@ -215,10 +242,11 @@ def attempt(page):
         return "unknown"
     log("출국일/도착일 확보! 정보 입력 시작")
     fill_form(page)
+    if toast_visible_now(page):      # 입력하는 사이에 뒤늦게 마감 안내가 뜬 경우
+        return "closed"
     if not AUTO_SUBMIT:
         return "filled"
-    submit(page)
-    return "booked"
+    return submit(page)
 
 
 def set_output(key, val):
@@ -238,53 +266,4 @@ def main():
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=HEADLESS)
-        context = browser.new_context(
-            locale="ko-KR", timezone_id="Asia/Seoul",
-            user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                        "(KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"))
-        page = context.new_page()
-        n = 0
-        t0 = time.time()
-        while True:
-            n += 1
-            try:
-                result = attempt(page)
-            except Exception as e:
-                result = "error"
-                log(f"{n}회차 오류: {scrub(e)}")
-                if SUBMIT_CLICKED:
-                    log("⚠️ 등록하기를 누른 뒤 오류가 났습니다. 중복 예약을 막기 위해 멈춥니다. 카톡/사이트에서 예약 여부를 확인하세요")
-                    push("등록하기 후 오류로 멈춤. 예약됐는지 카톡/사이트에서 꼭 확인하세요")
-                    set_output("booked", "true")
-                    break
-            if result == "closed":
-                log(f"{n}회차: 출국일 마감")
-            elif result == "closed_return":
-                log(f"{n}회차: 도착일 마감")
-            elif result == "unknown":
-                log(f"{n}회차: 판단불가 (달력 선택이 안 됐을 수 있음)")
-            elif result == "filled":
-                log("🎉 빈자리 확보 + 정보 입력 완료 (자동제출 OFF라 제출은 안 함)")
-                push(f"{DEPART_DATE} 빈자리! 입력까지 완료 (제출 안 함)")
-                if not HEADLESS:
-                    input("확인 후 엔터를 누르면 종료합니다...")
-                break
-            elif result == "booked":
-                log("🎉 등록하기 완료! 카톡 예약 안내를 확인하세요")
-                push(f"{DEPART_DATE} 예약 제출 완료! 카톡 예약 안내를 확인하세요")
-                set_output("booked", "true")
-                if not HEADLESS:
-                    input("확인 후 엔터를 누르면 종료합니다...")
-                break
-            if not LOOP:
-                break
-            if MAX_MINUTES and time.time() - t0 + INTERVAL > MAX_MINUTES * 60:
-                log(f"{MAX_MINUTES}분 경과: 이번 실행 종료 (다음 실행이 이어서 확인)")
-                break
-            time.sleep(INTERVAL + random.uniform(0, 10))
-        browser.close()
-
-
-main()
-
-
+        context = bro
