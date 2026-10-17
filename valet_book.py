@@ -266,4 +266,53 @@ def main():
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=HEADLESS)
-        context = bro
+        context = browser.new_context(
+            locale="ko-KR", timezone_id="Asia/Seoul",
+            user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"))
+        page = context.new_page()
+        n = 0
+        t0 = time.time()
+        while True:
+            n += 1
+            try:
+                result = attempt(page)
+            except Exception as e:
+                result = "error"
+                log(f"{n}회차 오류: {scrub(e)}")
+                if SUBMIT_CLICKED:
+                    log("⚠️ 등록하기를 누른 뒤 오류가 났습니다. 중복 예약을 막기 위해 멈춥니다. 카톡/사이트에서 예약 여부를 확인하세요")
+                    push("등록하기 후 오류로 멈춤. 예약됐는지 카톡/사이트에서 꼭 확인하세요")
+                    set_output("booked", "true")
+                    break
+            if result == "closed":
+                log(f"{n}회차: 출국일 마감")
+            elif result == "closed_return":
+                log(f"{n}회차: 도착일 마감")
+            elif result == "rejected":
+                log(f"{n}회차: 등록하기가 거절됨 (자리가 이미 사라짐) - 계속 시도")
+            elif result == "unknown":
+                log(f"{n}회차: 판단불가 (달력 선택이 안 됐을 수 있음)")
+            elif result == "filled":
+                log("🎉 빈자리 확보 + 정보 입력 완료 (자동제출 OFF라 제출은 안 함)")
+                push(f"{DEPART_DATE} 빈자리! 입력까지 완료 (제출 안 함)")
+                if not HEADLESS:
+                    input("확인 후 엔터를 누르면 종료합니다...")
+                break
+            elif result == "booked":
+                log("🎉 등록하기 완료! 카톡 예약 안내를 확인하세요")
+                push(f"{DEPART_DATE} 예약 제출 완료! 카톡 예약 안내를 확인하세요")
+                set_output("booked", "true")
+                if not HEADLESS:
+                    input("확인 후 엔터를 누르면 종료합니다...")
+                break
+            if not LOOP:
+                break
+            if MAX_MINUTES and time.time() - t0 + INTERVAL > MAX_MINUTES * 60:
+                log(f"{MAX_MINUTES}분 경과: 이번 실행 종료 (다음 실행이 이어서 확인)")
+                break
+            time.sleep(INTERVAL + random.uniform(0, 10))
+        browser.close()
+
+
+main()
